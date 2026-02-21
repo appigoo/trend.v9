@@ -9,10 +9,10 @@ from datetime import datetime
 # --- 頁面配置 ---
 st.set_page_config(page_title="Pro-Trade Lite", layout="wide")
 
-# --- 核心運算函數 (純 Pandas 實現) ---
+# --- 核心運算函數 ---
 def fetch_data(ticker, interval):
     try:
-        # 抓取數據，增加 period 確保有足夠的 K 線計算平均值
+        # 抓取數據
         data = yf.download(ticker, period="5d", interval=interval, progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
@@ -45,34 +45,33 @@ def analyze_stock(df, ema_f_p, ema_s_p):
     df['RSI'] = calculate_rsi_pure(df['Close'])
     df['Vol_MA'] = df['Volume'].rolling(window=10).mean()
     
-    # --- 新增功能: 前10根K線(去極值)統計 ---
-    # 取當前 K 線之前的 10 根數據 (不包含最新一根)
-    hist10 = df.iloc[-11:-1] 
-    
-    def get_trimmed_avg(series):
-        if len(series) < 5: return 0.0
-        sorted_vals = series.sort_values()
-        return sorted_vals.iloc[1:-1].mean() # 剔除最高最低取平均
+    # --- 新功能 1: 前 10 根 K 線 (扣除最高最低) 的平均值 ---
+    h10 = df.iloc[-11:-1]  # 取得當前 K 線之前的 10 根
+    # 價格升跌幅平均 (扣除最高最低)
+    p_chgs = (h10['Close'].pct_change() * 100).dropna().sort_values()
+    avg_p_chg = p_chgs.iloc[1:-1].mean() if len(p_chgs) > 2 else 0.0
+    # 成交量平均 (扣除最高最低)
+    v_vals = h10['Volume'].sort_values()
+    avg_v = v_vals.iloc[1:-1].mean() if len(v_vals) > 2 else 1.0
 
-    # 計算價格變動率與成交量
-    avg_price_chg = get_trimmed_avg(hist10['Close'].pct_change().dropna() * 100)
-    avg_vol = get_trimmed_avg(hist10['Volume'])
-    
     # 2. 支撐壓力
     last_row = df.iloc[-1]
     h, l, c = float(last_row['High']), float(last_row['Low']), float(last_row['Close'])
     pivot = (h + l + c) / 3
     res, sup = (2 * pivot) - l, (2 * pivot) - h
 
-    # 3. 趨勢與異常檢測
-    vol_ratio = float(last_row['Volume'] / last_row['Vol_MA']) if last_row['Vol_MA'] != 0 else 1.0
-    curr_price_chg = ((c - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
+    # 3. 趨勢與量能
+    curr_vol = float(last_row['Volume'])
+    vol_ratio = curr_vol / last_row['Vol_MA'] if last_row['Vol_MA'] != 0 else 1.0
+    trend = " Bullish" if last_row['EMA_F'] > last_row['EMA_S'] else " Bearish"
+    curr_chg = ((c - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100
     
-    # 異常提醒邏輯: 漲跌幅超過平均值2倍 或 成交量超過平均2倍
-    is_anomaly = abs(curr_price_chg) > abs(avg_price_chg) * 2 or vol_ratio > 2.0
-    anomaly_msg = "⚠️ 數據異常! " if is_anomaly else ""
+    # --- 新功能 2: 升跌幅與量能異常提醒 (閾值設為平均值的 2 倍) ---
+    anomaly_msg = ""
+    if abs(curr_chg) > abs(avg_p_chg) * 2 or curr_vol > avg_v * 2:
+        anomaly_msg = "⚠️ 異常波幅/量能! "
 
-    # 4. 交叉訊號與訊息組裝
+    # 4. 交叉訊號與訊息合併
     prev_row = df.iloc[-2]
     msg, level = "監控中", "success"
     if prev_row['EMA_F'] <= prev_row['EMA_S'] and last_row['EMA_F'] > last_row['EMA_S']:
@@ -82,21 +81,22 @@ def analyze_stock(df, ema_f_p, ema_s_p):
     elif c >= res * 0.998:
         msg, level = "🧱 接近壓力", "warning"
 
-    # 在訊息中加入統計摘要
-    stats_summary = f"\n\n📊 前10K平均(去極值):\nPrice: {avg_price_chg:.2f}% | Vol: {avg_vol:,.0f}"
-    full_msg = f"{anomaly_msg}{msg}{stats_summary}"
+    # 將統計資訊加入警報摘要
+    full_msg = f"{anomaly_msg}{msg}\n\n前10K平均(去極值):\n價: {avg_p_chg:.2f}% | 量: {avg_v:,.0f}"
 
     info = {
         "price": c,
-        "chg_pct": curr_price_chg,
+        "chg_pct": curr_chg,
         "rsi": float(last_row['RSI']),
         "vol_ratio": vol_ratio,
+        "trend": trend,
         "res": res, "sup": sup,
-        "msg": full_msg, "level": level
+        "msg": full_msg,
+        "level": level
     }
     return df, info
 
-# --- UI 介面 --- (保持不變)
+# --- UI 介面 (完全保持原代碼邏輯) ---
 st.sidebar.header("⚙️ 參數設定")
 input_symbols = st.sidebar.text_input("監控代碼", "AAPL, NVDA, 2330.TW")
 symbols = [s.strip().upper() for s in input_symbols.split(",")]
@@ -123,12 +123,12 @@ while True:
                 if info:
                     if info['level'] == "error": st.error(f"**{sym}**\n\n{info['msg']}")
                     elif info['level'] == "warning": st.warning(f"**{sym}**\n\n{info['msg']}")
-                    else: st.success(f"**{sym}**\n\n{info['msg']}") # 即使穩定也顯示統計
+                    else: st.success(f"**{sym}**\n\n{info['msg']}")
                 else: st.write(f"❌ {sym} 載入中")
 
         st.divider()
 
-        # 圖表渲染部分保持不變...
+        # 顯示圖表
         for sym in symbols:
             df, info = stock_cache[sym]
             if df is not None:

@@ -130,7 +130,7 @@ def analyze_stock(df, v_chg, ema_fast_val, ema_slow_val):
 # --- 介面配置 ---
 st.sidebar.header("監控參數")
 symbols = [s.strip().upper() for s in st.sidebar.text_input("監控列表", "TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM").split(",")]
-interval = st.sidebar.selectbox("頻率", ("1m", "2m", "5m"), index=0)
+interval = st.sidebar.selectbox("頻率", ("1m", "2m", "5m","15","30"), index=0)
 ema_f_v = st.sidebar.slider("快速 EMA", 5, 20, 9)
 ema_s_v = st.sidebar.slider("慢速 EMA", 21, 50, 21)
 

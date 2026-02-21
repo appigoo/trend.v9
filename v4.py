@@ -12,7 +12,6 @@ st.title("🚀 專業實時監控 (摘要含量能與趨勢資訊)")
 # --- 核心運算函數 ---
 def fetch_data(ticker, interval):
     try:
-        # 抓取 2 天數據以確保指標計算穩定
         data = yf.download(ticker, period="2d", interval=interval, progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
@@ -52,21 +51,31 @@ def analyze_stock(df, v_chg, ema_fast_val, ema_slow_val):
     
     last, prev = df.iloc[-1], df.iloc[-2]
     curr_p = float(last['Close'])
+    prev_p = float(prev['Close'])
     
     # 3. 趨勢與量能判斷
     trend_type = "多頭 (Bullish)" if last['EMA_F'] > last['EMA_S'] else "空頭 (Bearish)"
     vol_ratio = float(last['Volume'] / last['Vol_MA']) if last['Vol_MA'] != 0 else 1.0
     
+    # --- [新增] 異常偵測邏輯 ---
+    price_change_pct = ((curr_p - prev_p) / prev_p) * 100
+    is_price_anomaly = abs(price_change_pct) >= 0.5  # 單根 K 線漲跌超過 0.5%
+    is_vol_anomaly = vol_ratio >= 2.5               # 成交量超過 10 期均值 2.5 倍
+    # -----------------------
+
     if vol_ratio >= 2.0: vol_status = "🔥 爆量"
     elif vol_ratio >= 1.5: vol_status = "⚡ 放大"
     else: vol_status = "正常"
 
-    # 4. 警報訊息
+    # 4. 警報訊息處理
     msg = "趨勢穩定"
     alert_level = "success"
     
-    # 交叉邏輯
-    if prev['EMA_F'] <= prev['EMA_S'] and last['EMA_F'] > last['EMA_S']:
+    # 優先級判斷：異常提醒 > 交叉提醒
+    if is_price_anomaly or is_vol_anomaly:
+        msg = f"⚠️ 異常: {'劇烈波動' if is_price_anomaly else ''} {'量能激增' if is_vol_anomaly else ''}"
+        alert_level = "error" if is_price_anomaly and price_change_pct < 0 else "warning"
+    elif prev['EMA_F'] <= prev['EMA_S'] and last['EMA_F'] > last['EMA_S']:
         msg = "↗️ 黃金交叉"; alert_level = "warning" if v_chg > 0.2 else "error"
     elif prev['EMA_F'] >= prev['EMA_S'] and last['EMA_F'] < last['EMA_S']:
         msg = "↘️ 死亡交叉"; alert_level = "error"
@@ -75,6 +84,7 @@ def analyze_stock(df, v_chg, ema_fast_val, ema_slow_val):
 
     info = {
         "price": curr_p,
+        "price_chg": price_change_pct, # 新增
         "day_pct": ((curr_p - df['Open'].iloc[-1]) / df['Open'].iloc[-1]) * 100,
         "rsi": float(last['RSI']),
         "vol_ratio": vol_ratio,
@@ -87,7 +97,7 @@ def analyze_stock(df, v_chg, ema_fast_val, ema_slow_val):
 
 # --- 介面配置 ---
 st.sidebar.header("監控參數")
-symbols = [s.strip().upper() for s in st.sidebar.text_input("監控列表", "AAPL, NVDA, TSLA, 2330.TW").split(",")]
+symbols = [s.strip().upper() for s in st.sidebar.text_input("監控列表", "TSLA, NIO, TSLL, XPEV, META, GOOGL, AAPL, NVDA, AMZN, MSFT, TSM").split(",")]
 interval = st.sidebar.selectbox("頻率", ("1m", "2m", "5m"), index=0)
 ema_f_v = st.sidebar.slider("快速 EMA", 5, 20, 9)
 ema_s_v = st.sidebar.slider("慢速 EMA", 21, 50, 21)
@@ -104,7 +114,7 @@ while True:
             st.info(f"系統環境：VIX {'上升中，建議保守' if v_chg > 0 else '平穩，有利技術面操作'}")
 
         # 1. 強化版即時警報摘要
-        st.subheader("🔔 即時警報摘要 (含趨勢與量能)")
+        st.subheader("🔔 即時警報摘要 (含異常波動監控)")
         cols = st.columns(len(symbols))
         stock_data_store = {}
 
@@ -115,14 +125,13 @@ while True:
             
             with cols[idx]:
                 if info:
-                    # 顯示狀態卡片
                     if info['alert_level'] == "error": st.error(f"**{sym} | {info['msg']}**")
                     elif info['alert_level'] == "warning": st.warning(f"**{sym} | {info['msg']}**")
                     else: st.success(f"**{sym} | 監控中**")
                     
-                    # 注入關鍵資訊內容
-                    st.markdown(f"**量能狀態:** {info['vol_status']}")
-                    st.markdown(f"**趨勢:** {info['trend']}")
+                    # 注入關鍵資訊內容，增加瞬時漲跌幅顯示
+                    st.markdown(f"**量能:** {info['vol_status']} ({info['vol_ratio']:.1f}x)")
+                    st.markdown(f"**瞬時:** {info['price_chg']:+.2f}%") # 新增
                     st.caption(f"RSI: {info['rsi']:.1f} | 價: {info['price']:.2f}")
                 else:
                     st.write(f"{sym} 載入失敗")
@@ -139,6 +148,7 @@ while True:
                         st.metric("當前價格", f"{info['price']:.2f}", f"{info['day_pct']:.2f}%")
                         st.write(f"壓力位: `{info['res']:.2f}`")
                         st.write(f"支撐位: `{info['sup']:.2f}`")
+                        st.write(f"當前趨勢: \n**{info['trend']}**") # 移到側邊增加可讀性
                     with c2:
                         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
                         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="K"), row=1, col=1)
@@ -146,7 +156,8 @@ while True:
                         fig.add_hline(y=info['sup'], line_dash="dash", line_color="green", annotation_text="支", row=1, col=1)
                         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_F'], name="Fast", line=dict(color='orange', width=1)), row=1, col=1)
                         
-                        v_colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' for i in range(len(df))]
+                        # 修正：根據收盤/開盤價決定成交量顏色
+                        v_colors = ['#ef5350' if df['Close'].iloc[i] < df['Open'].iloc[i] else '#26a69a' for i in range(len(df))]
                         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=v_colors), row=2, col=1)
                         fig.update_layout(height=350, margin=dict(t=0, b=0), xaxis_rangeslider_visible=False, showlegend=False)
                         st.plotly_chart(fig, use_container_width=True)
